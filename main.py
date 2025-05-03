@@ -1,94 +1,186 @@
-
+import openai
+import speech_recognition as sr
 import pyttsx3
 import json
-import random
-from vosk import Model, KaldiRecognizer
-import pyaudio
-import os
-from memory import save_character, list_characters
-from llm_npc import generate_npc_llm
+from abc import ABC, abstractmethod
 
-# Initialize text-to-speech engine
-engine = pyttsx3.init()
-engine.setProperty('rate', 180)
+# Configuration
+GPT_MODEL = "gpt-3.5-turbo"
+WAKE_WORD = "hey dm"
 
-# Load Vosk voice recognition model
-model_path = "vosk-model-small-en-us-0.15"
-if not os.path.exists(model_path):
-    print("Please download the Vosk model from https://alphacephei.com/vosk/models and extract it here.")
-    exit()
+class GPTClient:
+    def __init__(self, api_key):
+        openai.api_key = api_key
+        
+    def generate_content(self, prompt, max_tokens=500):
+        try:
+            response = openai.ChatCompletion.create(
+                model=GPT_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens
+            )
+            return response.choices[0].message['content'].strip()
+        except Exception as e:
+            return f"Error generating content: {str(e)}"
 
-model = Model(model_path)
-recognizer = KaldiRecognizer(model, 16000)
+class VoiceAssistant:
+    def __init__(self):
+        self.recognizer = sr.Recognizer()
+        self.microphone = sr.Microphone()
+        self.engine = pyttsx3.init()
+        
+    def listen(self):
+        with self.microphone as source:
+            print("Listening...")
+            self.recognizer.adjust_for_ambient_noise(source)
+            audio = self.recognizer.listen(source)
+            
+        try:
+            return self.recognizer.recognize_google(audio).lower()
+        except sr.UnknownValueError:
+            return ""
+        except Exception as e:
+            print(f"Error in speech recognition: {e}")
+            return ""
 
-# Setup microphone stream
-mic = pyaudio.PyAudio()
-stream = mic.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=8192)
-stream.start_stream()
+    def speak(self, text):
+        self.engine.say(text)
+        self.engine.runAndWait()
 
-# Text-to-speech helper
-def speak(text):
-    print("DM:", text)
-    engine.say(text)
-    engine.runAndWait()
+class ContentGenerator(ABC):
+    def __init__(self, gpt_client):
+        self.gpt = gpt_client
+    
+    @abstractmethod
+    def generate_prompt(self, parameters):
+        pass
+    
+    @abstractmethod
+    def parse_response(self, response):
+        pass
 
-# Dice roller
-def roll_dice(command):
-    try:
-        parts = command.lower().split("d")
-        num = int(parts[0]) if parts[0] else 1
-        sides = int(parts[1])
-        rolls = [random.randint(1, sides) for _ in range(num)]
-        result = f"You rolled: {rolls} = {sum(rolls)}"
-        return result
-    except:
-        return "Sorry, I couldn't understand the dice roll."
+class CharacterGenerator(ContentGenerator):
+    def generate_prompt(self, parameters):
+        return f"""
+        Generate a detailed D&D 5e character with:
+        - Race: {parameters.get('race', 'random')}
+        - Class: {parameters.get('class', 'random')}
+        - Background: {parameters.get('background', 'random')}
+        Include ability scores (using standard array), equipment, personality traits, and bonds.
+        Format as JSON with keys: name, race, class, level, stats, equipment, background, personality, bonds.
+        """
+    
+    def parse_response(self, response):
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return response
 
-# Basic NPC generator
-def generate_npc():
-    names = ["Thargok", "Elandra", "Milo", "Seraphine"]
-    traits = ["mysterious", "grumpy", "friendly", "deceptive"]
-    roles = ["blacksmith", "barkeep", "ranger", "wizard"]
-    npc = {
-        "name": random.choice(names),
-        "trait": random.choice(traits),
-        "role": random.choice(roles)
-    }
-    save_character(npc)
-    return f"{npc['name']} is a {npc['trait']} {npc['role']}."
+class NPCGenerator(ContentGenerator):
+    def generate_prompt(self, parameters):
+        return f"""
+        Create a D&D NPC with:
+        - Role: {parameters.get('role', 'random')}
+        - Alignment: {parameters.get('alignment', 'random')}
+        - Secret: {parameters.get('secret', 'random')}
+        Include physical description, personality quirks, motivations, and plot hooks.
+        Format as JSON with keys: name, race, occupation, alignment, description, personality, motivations, plot_hooks.
+        """
+    
+    def parse_response(self, response):
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return response
 
-# Command handler
-def handle_command(text):
-    text = text.lower()
-    if "character" in text and "smart" in text:
-        npc = generate_npc_llm()
-        speak("Here's a detailed character.")
-        return npc
-    elif "character" in text or "npc" in text:
-        return generate_npc()
-    elif "roll" in text and "d" in text:
-        return roll_dice(text.replace("roll ", ""))
-    elif "list characters" in text or "recall characters" in text:
-        return list_characters()
-    elif "hello" in text:
-        return "Hello adventurer! What would you like me to do?"
-    elif "quit" in text or "exit" in text:
-        speak("Goodbye!")
-        exit()
-    else:
-        return "I'm not sure how to help with that yet."
+class MapGenerator(ContentGenerator):
+    def generate_prompt(self, parameters):
+        return f"""
+        Design a {parameters.get('location', 'dungeon')} map with:
+        - Size: {parameters.get('size', 'medium')}
+        - Key landmarks
+        - Environmental hazards
+        - Hidden secrets
+        Include possible encounters and loot locations.
+        Format as JSON with keys: location_type, map_description, landmarks, hazards, secrets, encounters, loot.
+        """
+    
+    def parse_response(self, response):
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return response
 
-# Start voice assistant
-speak("Dungeon Master Assistant is ready.")
+class QuestGenerator(ContentGenerator):
+    def generate_prompt(self, parameters):
+        return f"""
+        Create a {parameters.get('quest_type', 'side')} quest:
+        - Difficulty: {parameters.get('difficulty', 'medium')}
+        - Length: {parameters.get('length', '3 encounters')}
+        Include NPC involvement, moral dilemmas, and multiple resolution paths.
+        Format as JSON with keys: quest_name, quest_type, objectives, npcs_involved, rewards, complications, resolution_options.
+        """
+    
+    def parse_response(self, response):
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            return response
 
-while True:
-    print("Listening...")
-    data = stream.read(4096, exception_on_overflow=False)
+class DnDAssistant:
+    def __init__(self, api_key):
+        self.gpt_client = GPTClient(api_key)
+        self.voice = VoiceAssistant()
+        self.generators = {
+            "character": CharacterGenerator(self.gpt_client),
+            "npc": NPCGenerator(self.gpt_client),
+            "map": MapGenerator(self.gpt_client),
+            "quest": QuestGenerator(self.gpt_client)
+        }
+        
+    def process_command(self, command):
+        command = command.lower()
+        if "character" in command:
+            return self.generate_content("character")
+        elif "npc" in command:
+            return self.generate_content("npc")
+        elif "map" in command:
+            return self.generate_content("map")
+        elif "quest" in command:
+            return self.generate_content("quest")
+        return "I didn't understand that command. Try asking for a character, NPC, map, or quest."
+    
+    def generate_content(self, content_type):
+        generator = self.generators[content_type]
+        prompt = generator.generate_prompt({})  # Can pass parameters here
+        response = self.gpt_client.generate_content(prompt)
+        result = generator.parse_response(response)
+        
+        if isinstance(result, dict):
+            return self.format_response(result)
+        return response
+    
+    def format_response(self, data):
+        formatted = []
+        for key, value in data.items():
+            if isinstance(value, list):
+                value = "\n- " + "\n- ".join(value)
+            formatted.append(f"{key.title()}: {value}")
+        return "\n".join(formatted)
+    
+    def run(self):
+        print("Dungeon Master Assistant activated. Say 'hey dm' to start.")
+        while True:
+            text = self.voice.listen()
+            if WAKE_WORD in text:
+                self.voice.speak("How can I assist you, Dungeon Master?")
+                command = self.voice.listen()
+                print(f"Command received: {command}")
+                response = self.process_command(command)
+                print("Generated response:", response)
+                self.voice.speak(response)
 
-    if recognizer.AcceptWaveform(data):
-        result = json.loads(recognizer.Result())
-        text = result.get("text", "")
-        if text:
-            print(f"You said: {text}")
-            response = handle_command(text)
-            speak(response)
+if __name__ == "__main__":
+    API_KEY = "your-api-key-here"  # Replace with your OpenAI API key
+    assistant = DnDAssistant(API_KEY)
+    assistant.run()
