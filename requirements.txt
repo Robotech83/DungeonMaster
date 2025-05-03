@@ -1,4 +1,0 @@
-pyttsx3
-vosk
-pyaudio
-speech_recognition
